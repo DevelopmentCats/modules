@@ -257,7 +257,14 @@ fi
 # Installing mcp-remote
 if ! command -v mcp-remote >/dev/null; then
   echo "Installing mcp-remote..."
-  npm install -g mcp-remote
+  # Create npm global dir in user's home if it doesn't exist
+  mkdir -p $HOME/.npm-global
+  # Configure npm to use this directory
+  npm config set prefix $HOME/.npm-global
+  # Install mcp-remote in user directory
+  npm install --prefix=$HOME/.npm-global mcp-remote
+  # Add to PATH for this session
+  export PATH="$HOME/.npm-global/bin:$PATH"
 fi
 EOT
 }
