@@ -184,7 +184,6 @@ resource "coder_app" "mcp-proxy" {
 
 # Install MCP server dependencies and tools
 resource "coder_script" "setup_mcp_environment" {
-  count        = length(local.all_servers) > 0 ? 1 : 0
   agent_id     = var.agent_id
   display_name = "Setup MCP Environment"
   run_on_start = true
@@ -242,7 +241,6 @@ EOT
 
 # Create and start MCP servers
 resource "coder_script" "start_mcp_servers" {
-  count        = length(local.all_servers) > 0 ? 1 : 0
   agent_id     = var.agent_id
   display_name = "Start MCP Servers"
   run_on_start = true
@@ -295,6 +293,7 @@ fi
 echo ""
 echo "MCP server logs can be found in $HOME/.cursor/*.log"
 EOT
+  depends_on = [coder_script.setup_mcp_environment]
 }
 
 output "mcp_servers_configured" {
