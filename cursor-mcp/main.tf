@@ -182,154 +182,119 @@ resource "coder_app" "mcp-proxy" {
   order        = 999
 }
 
-# Create MCP configuration file in the workspace using a script
-resource "coder_script" "mcp_json" {
+# Install MCP server dependencies and tools
+resource "coder_script" "setup_mcp_environment" {
   count        = length(local.all_servers) > 0 ? 1 : 0
   agent_id     = var.agent_id
-  display_name = "Create MCP Config"
+  display_name = "Setup MCP Environment"
   run_on_start = true
   script       = <<-EOT
 #!/bin/bash
 set -e
+
+echo "===== Setting up MCP Environment ====="
+
+# Create necessary directories
 mkdir -p "${var.mcp_config_dir}"
+mkdir -p "$HOME/.cursor/bin"
+
+# Also create .cursor directory in the project path if filesystem is enabled
+if [ "${var.enable_filesystem ? "true" : "false"}" = "true" ]; then
+  PROJECT_DIR="${var.filesystem_path}"
+  echo "Creating .cursor directory in project: $PROJECT_DIR"
+  mkdir -p "$PROJECT_DIR/.cursor"
+  
+  # Create MCP configuration in the project directory
+  cat > "$PROJECT_DIR/.cursor/mcp.json" << 'EOF'
+${local.mcp_workspace_config}
+EOF
+  echo "Created MCP config at $PROJECT_DIR/.cursor/mcp.json"
+fi
+
+# Also create the config in the standard location as a backup
 cat > "${var.mcp_config_dir}/mcp.json" << 'EOF'
 ${local.mcp_workspace_config}
 EOF
-echo "MCP configuration created at ${var.mcp_config_dir}/mcp.json"
-EOT
-}
 
-# Create proxy script files using a single script resource
-resource "coder_script" "create_proxy_scripts" {
-  count        = var.enable_proxy && length(local.all_servers) > 0 ? 1 : 0
-  agent_id     = var.agent_id
-  display_name = "Create Proxy Scripts"
-  run_on_start = true
-  script       = <<-EOT
+# Install mcp-remote if needed (for proxying)
+if [ "${var.enable_proxy ? "true" : "false"}" = "true" ]; then
+  echo "Installing mcp-remote for proxying..."
+  cd $HOME
+  npm install mcp-remote --no-fund --silent
+
+  # Create a wrapper script
+  cat > $HOME/.cursor/bin/mcp-remote << 'EOF'
 #!/bin/bash
-set -e
-${join("\n", [
-  for server_key, server in local.all_servers : 
-  "cat > \"$HOME/mcp-proxy-${server.name}.sh\" << 'EOF'\n#!/bin/bash\ncd $HOME\nexec mcp-remote serve --port ${local.server_ports[server_key]} \"${server.command} ${join(" ", server.args)}\"\nEOF\nchmod +x \"$HOME/mcp-proxy-${server.name}.sh\""
-])}
-echo "Created proxy script files for MCP servers"
-EOT
-}
+NODE_PATH=$HOME/node_modules node $HOME/node_modules/mcp-remote/bin/mcp-remote.js "$@"
+EOF
+  chmod +x $HOME/.cursor/bin/mcp-remote
 
-# Install required dependencies script
-resource "coder_script" "install_dependencies" {
-  count        = var.enable_proxy && length(local.all_servers) > 0 ? 1 : 0
-  agent_id     = var.agent_id
-  display_name = "Install MCP Dependencies"
-  run_on_start = true
-  script       = <<-EOT
-#!/bin/bash
-set -e
-
-# Installing jq (for JSON processing)
-if ! command -v jq >/dev/null; then
-  echo "Installing jq..."
-  if command -v apt-get >/dev/null; then
-    sudo apt-get update && sudo apt-get install -y jq
-  elif command -v yum >/dev/null; then
-    sudo yum install -y jq
-  elif command -v dnf >/dev/null; then
-    sudo dnf install -y jq
-  elif command -v apk >/dev/null; then
-    apk add --no-cache jq
+  # Add to PATH if not already there
+  if ! grep -q "$HOME/.cursor/bin" $HOME/.bashrc; then
+    echo 'export PATH="$HOME/.cursor/bin:$PATH"' >> $HOME/.bashrc
   fi
+  export PATH="$HOME/.cursor/bin:$PATH"
 fi
 
-# Installing Node.js and npm
-if ! command -v node >/dev/null || ! command -v npm >/dev/null; then
-  echo "Installing Node.js and npm..."
-  if command -v apt-get >/dev/null; then
-    sudo apt-get update && sudo apt-get install -y nodejs npm
-  elif command -v yum >/dev/null; then
-    sudo yum install -y nodejs npm
-  elif command -v dnf >/dev/null; then
-    sudo dnf install -y nodejs npm
-  elif command -v apk >/dev/null; then
-    apk add --no-cache nodejs npm
-  fi
-fi
-
-# Installing mcp-remote
-if ! command -v mcp-remote >/dev/null; then
-  echo "Installing mcp-remote..."
-  # Create npm global dir in user's home if it doesn't exist
-  mkdir -p $HOME/.npm-global
-  # Configure npm to use this directory
-  npm config set prefix $HOME/.npm-global
-  # Install mcp-remote in user directory
-  npm install --prefix=$HOME/.npm-global mcp-remote
-  # Add to PATH for this session
-  export PATH="$HOME/.npm-global/bin:$PATH"
-fi
+echo "✅ MCP environment setup complete"
 EOT
 }
 
-# Start MCP proxy servers
-resource "coder_script" "start_proxies" {
-  count        = var.enable_proxy && length(local.all_servers) > 0 ? 1 : 0
+# Create and start MCP servers
+resource "coder_script" "start_mcp_servers" {
+  count        = length(local.all_servers) > 0 ? 1 : 0
   agent_id     = var.agent_id
-  display_name = "Start MCP Proxies"
+  display_name = "Start MCP Servers"
   run_on_start = true
+  icon         = "/icon/cursor.svg" 
   script       = <<-EOT
 #!/bin/bash
 set -e
 
-# Start each MCP proxy server
-${join("\n", [
-  for server_key, server in local.all_servers :
-  "nohup /home/coder/mcp-proxy-${server.name}.sh > /home/coder/mcp-proxy-${server.name}.log 2>/dev/null &"
-])}
+export PATH="$HOME/.cursor/bin:$PATH"
+echo "===== Starting MCP Servers ====="
 
-echo "MCP servers started:"
+# Create proxy scripts if proxying is enabled
+if [ "${var.enable_proxy ? "true" : "false"}" = "true" ]; then
+  ${join("\n  ", [
+    for server_key, server in local.all_servers : 
+    "cat > \"$HOME/.cursor/mcp-proxy-${server.name}.sh\" << 'EOF'\n#!/bin/bash\ncd $HOME\nexec mcp-remote serve --port ${local.server_ports[server_key]} \"${server.command} ${join(" ", server.args)}\"\nEOF\nchmod +x \"$HOME/.cursor/mcp-proxy-${server.name}.sh\""
+  ])}
+  
+  # Start proxy servers
+  ${join("\n  ", [
+    for server_key, server in local.all_servers :
+    "nohup $HOME/.cursor/mcp-proxy-${server.name}.sh > $HOME/.cursor/mcp-proxy-${server.name}.log 2>&1 &"
+  ])}
+else
+  # Start direct MCP servers without proxying
+  ${join("\n  ", [
+    for server_key, server in local.all_servers :
+    "nohup ${server.command} ${join(" ", server.args)} > $HOME/.cursor/${server.name}-mcp.log 2>&1 &"
+  ])}
+fi
+
+echo "✅ MCP servers started:"
 ${join("\n", [
   for server_key, server in local.all_servers :
   "echo \"- ${server.name} (port ${local.server_ports[server_key]})\""
 ])}
-EOT
-}
-
-# MCP servers information script
-resource "coder_script" "mcp-servers" {
-  count        = length(local.all_servers) > 0 ? 1 : 0
-  agent_id     = var.agent_id
-  display_name = "MCP Servers"
-  icon         = "/icon/cursor.svg"
-  run_on_start = true
-  script       = <<-EOT
-#!/bin/bash
-echo "Setting up Cursor MCP Servers..."
-echo ""
-echo "MCP_CONFIG_DIR=\"${var.mcp_config_dir}\""
-${var.enable_github ? "echo \"GITHUB_TOKEN environment variable is being used\"" : ""}
-${var.enable_filesystem ? "echo \"Filesystem path: ${var.filesystem_path}\"" : ""}
-echo ""
-echo "Configured MCP servers:"
-${join("\n", [
-  for server_key, server in local.all_servers :
-  "echo \"- ${server.name}\""
-])}
 
 echo ""
 if [ "${var.enable_proxy ? "true" : "false"}" = "true" ]; then
-  echo "Proxying is enabled"
-  echo "MCP servers will be accessible from your local Cursor application."
+  echo "MCP servers are being proxied and will be accessible from your local Cursor."
+  echo "Add the following configuration to your local Cursor:"
+  echo ""
+  echo 'cat > ~/.cursor/mcp.json << EOF'
+  echo '${replace(local.local_mcp_config_template, "$", "\\$")}'
+  echo 'EOF'
 else
-  echo "Proxying is disabled"
-  echo "MCP servers will only be available within this workspace."
+  echo "MCP servers are running locally within the workspace."
 fi
-EOT
-}
 
-# Generate MCP configuration for the local Cursor client
-resource "local_file" "cursor_mcp_config" {
-  count    = var.enable_proxy && length(local.all_servers) > 0 ? 1 : 0
-  content  = local.local_mcp_config_template
-  filename = "${path.module}/cursor_mcp_config.json"
+echo ""
+echo "MCP server logs can be found in $HOME/.cursor/*.log"
+EOT
 }
 
 output "mcp_servers_configured" {
@@ -338,5 +303,5 @@ output "mcp_servers_configured" {
 }
 
 output "proxy_instructions" {
-  value = var.enable_proxy && length(local.all_servers) > 0 ? "MCP servers are being proxied. Add the following to your local Cursor MCP configuration (~/.cursor/mcp.json):\n\nPlease copy the configuration from: ${path.module}/cursor_mcp_config.json" : null
+  value = var.enable_proxy && length(local.all_servers) > 0 ? "MCP servers are being proxied. Add the configuration shown in the 'Start MCP Servers' script output to your local Cursor MCP configuration (~/.cursor/mcp.json)" : null
 }
