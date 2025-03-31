@@ -5,3 +5,4 @@ node_modules
 
 # Ignore generated credentials from google-github-actions/auth
 gha-creds-*.json
+cursor-mcp/cursor_mcp_config.json

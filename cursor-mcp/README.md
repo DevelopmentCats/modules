@@ -182,3 +182,34 @@ This approach ensures that your local Cursor can seamlessly interact with MCP se
 |------|-------------|
 | `mcp_servers_configured` | List of configured MCP server names |
 | `proxy_instructions` | Instructions for connecting your local Cursor to the proxied MCP servers |
+
+## Troubleshooting
+
+### MCP Servers Not Appearing in Cursor
+
+If MCP servers are not appearing in your local Cursor:
+
+1. Verify that the MCP servers are running in your workspace by checking the "MCP Servers" script output
+2. Ensure you've copied the correct configuration to your local `~/.cursor/mcp.json` file
+3. Check that port forwarding is working by visiting the proxy URLs directly in your browser
+4. Restart your local Cursor application after updating the configuration
+
+### GitHub Integration Issues
+
+For GitHub integration:
+
+1. Ensure your GitHub token has the necessary permissions (typically repo access)
+2. If using a token directly, make sure it's properly specified in the module configuration
+3. If using the `GITHUB_TOKEN` environment variable, verify it's available in your workspace
+
+### Performance Considerations
+
+MCP servers run directly in your workspace and communicate with your local Cursor over port forwarding. For optimal performance:
+
+1. Use a workspace with sufficient resources for running MCP servers
+2. Consider connection quality when working with large repositories or datasets
+3. For filesystem operations, keep directories targeted by the filesystem server relatively small
+
+## Contributing
+
+If you encounter issues or have suggestions for improving this module, please submit an issue or pull request to the Coder registry repository.
