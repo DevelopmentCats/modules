@@ -8,3 +8,4 @@ gha-creds-*.json
 
 # Ignore Cursor cache
 .cursor/
+.temp/
