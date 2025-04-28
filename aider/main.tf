@@ -284,7 +284,7 @@ resource "coder_script" "aider" {
     if [ "${var.install_aider}" = "true" ]; then
       echo "Installing Aider using recommended method..."
       
-      # Install using aider-install (recommended method from docs)
+      # Install using aider-install 
       if command_exists python3; then
         python3 -m pip install aider-install
         aider-install
