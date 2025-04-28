@@ -119,6 +119,18 @@ locals {
     }
   }
   
+  # Browser mode options
+  browser_options = {
+    "enabled" = {
+      name  = "Enabled"
+      value = "true"
+    }
+    "disabled" = {
+      name  = "Disabled"
+      value = "false"
+    }
+  }
+  
   selected_provider = data.coder_parameter.api_provider.value
   selected_model = data.coder_parameter.model.value
   
@@ -166,6 +178,30 @@ variable "additional_arguments" {
   type        = string
   description = "Additional arguments to pass to Aider."
   default     = ""
+}
+
+variable "git_repository_url" {
+  type        = string
+  description = "URL of a Git repository to clone for use with Aider. If empty, no repository will be cloned."
+  default     = ""
+}
+
+variable "git_branch" {
+  type        = string
+  description = "Branch to check out when cloning the Git repository."
+  default     = "main"
+}
+
+variable "auto_commit" {
+  type        = bool
+  description = "Whether to configure Aider to automatically commit changes."
+  default     = true
+}
+
+variable "browser_mode" {
+  type        = bool
+  description = "Whether to launch Aider in browser mode instead of terminal mode."
+  default     = false
 }
 
 # Parameter to select the API provider
@@ -264,6 +300,26 @@ data "coder_parameter" "enable_voice" {
   }
 }
 
+# Parameter for browser mode
+data "coder_parameter" "browser_mode" {
+  name         = "browser_mode"
+  display_name = "Browser Mode"
+  description  = "Launch Aider in browser UI mode instead of terminal"
+  type         = "string"
+  mutable      = true
+  default      = "false"
+  icon         = "/icon/terminal.svg"
+  order        = 6
+
+  dynamic "option" {
+    for_each = local.browser_options
+    content {
+      name  = option.value.name
+      value = option.value.value
+    }
+  }
+}
+
 # Install and Initialize Aider
 resource "coder_script" "aider" {
   agent_id     = var.agent_id
@@ -273,75 +329,103 @@ resource "coder_script" "aider" {
     #!/bin/bash
     set -e
 
-    # Function to check if a command exists
-    command_exists() {
-      command -v "$1" >/dev/null 2>&1
-    }
-
     echo "Setting up Aider AI pair programming..."
 
-    # Install Aider if enabled
+    # Install essential dependencies
+    if [ "$(uname)" = "Linux" ]; then
+      echo "Installing dependencies on Linux..."
+      if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update
+        sudo apt-get install -y git python3 python3-pip
+        
+        # Install PortAudio if voice support is enabled
+        if [ "${data.coder_parameter.enable_voice.value}" = "true" ]; then
+          sudo apt-get install -y libportaudio2 libasound2-plugins libpulse-dev
+          pip3 install pyaudio sounddevice
+        fi
+        
+        # Install Node.js if Playwright is enabled
+        if [ "${data.coder_parameter.install_playwright.value}" = "true" ]; then
+          curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+        fi
+      elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y git python3 python3-pip
+        
+        # Install PortAudio if voice support is enabled
+        if [ "${data.coder_parameter.enable_voice.value}" = "true" ]; then
+          sudo dnf install -y portaudio portaudio-devel pulseaudio-libs-devel
+          pip3 install pyaudio sounddevice
+        fi
+        
+        # Install Node.js if Playwright is enabled
+        if [ "${data.coder_parameter.install_playwright.value}" = "true" ]; then
+          sudo dnf module install -y nodejs:18
+        fi
+      fi
+    elif [ "$(uname)" = "Darwin" ]; then
+      echo "Installing dependencies on macOS..."
+      if ! command -v brew >/dev/null 2>&1; then
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      fi
+      brew install git python3
+      
+      # Install PortAudio if voice support is enabled
+      if [ "${data.coder_parameter.enable_voice.value}" = "true" ]; then
+        brew install portaudio
+        pip3 install pyaudio sounddevice
+      fi
+      
+      # Install Node.js if Playwright is enabled
+      if [ "${data.coder_parameter.install_playwright.value}" = "true" ]; then
+        brew install node
+      fi
+    fi
+
+    # Install Aider
     if [ "${var.install_aider}" = "true" ]; then
-      echo "Installing Aider using recommended method..."
-      
-      # Install using aider-install 
-      if command_exists python3; then
-        python3 -m pip install aider-install
-        aider-install
-      elif command_exists python; then
-        python -m pip install aider-install
-        aider-install
-      else
-        echo "Error: Python not found. Please install Python to use Aider."
-        exit 1
-      fi
+      echo "Installing Aider..."
+      pip3 install aider-install
+      aider-install
     fi
 
-    # Install PortAudio for voice support if requested
-    if [ "${data.coder_parameter.enable_voice.value}" = "true" ]; then
-      echo "Setting up voice coding support..."
-      
-      if [ "$(uname)" = "Linux" ]; then
-        if command_exists apt-get; then
-          echo "Installing PortAudio for voice support on Linux..."
-          sudo apt-get update && sudo apt-get install -y libportaudio2 libasound2-plugins
-        elif command_exists dnf; then
-          echo "Installing PortAudio for voice support on Linux (Fedora/RHEL)..."
-          sudo dnf install -y portaudio portaudio-devel
-        elif command_exists pacman; then
-          echo "Installing PortAudio for voice support on Linux (Arch)..."
-          sudo pacman -S --noconfirm portaudio
-        else
-          echo "Warning: Couldn't detect package manager to install PortAudio."
-        fi
-      elif [ "$(uname)" = "Darwin" ]; then
-        if command_exists brew; then
-          echo "Installing PortAudio for voice support on Mac..."
-          brew install portaudio
-        else
-          echo "Warning: Homebrew not found. Can't install PortAudio."
-        fi
-      else
-        echo "Voice support should work on Windows without additional packages."
-      fi
-    fi
-
-    # Install Playwright for web support if requested
+    # Install Playwright if enabled
     if [ "${data.coder_parameter.install_playwright.value}" = "true" ]; then
-      if command_exists npm; then
-        echo "Installing Playwright for web scraping support..."
+      if command -v npm >/dev/null 2>&1; then
+        echo "Installing Playwright for web scraping..."
         npm install -g playwright
-        playwright install --with-deps chromium
-      else
-        echo "Warning: npm not found. Can't install Playwright."
+        npx playwright install --with-deps chromium
       fi
     fi
 
-    # Create the folder if it doesn't exist
+    # Create the workspace folder
     mkdir -p "${var.folder}"
-    
-    # Touch the log file
     touch "${var.log_path}"
+    
+    # Setup Git repository if provided
+    if [ -n "${var.git_repository_url}" ]; then
+      # Configure Git
+      git config --global user.email "$(whoami)@$(hostname)" 2>/dev/null || true
+      git config --global user.name "$(whoami)" 2>/dev/null || true
+      
+      # Clone repository
+      echo "Cloning repository: ${var.git_repository_url}"
+      if [ -z "$(ls -A ${var.folder})" ]; then
+        git clone --branch ${var.git_branch} ${var.git_repository_url} ${var.folder}
+      else
+        repo_name=$(basename "${var.git_repository_url}" .git)
+        git clone --branch ${var.git_branch} ${var.git_repository_url} "${var.folder}/${repo_name}"
+      fi
+    fi
+    
+    # Create Aider config
+    mkdir -p "$HOME/.config/aider"
+    cat > "$HOME/.config/aider/config.yaml" <<EOF
+# Aider configuration
+model: ${local.selected_model}
+provider: ${local.selected_provider}
+auto_commit: ${var.auto_commit}
+EOF
     
     echo "Aider setup complete! Access it through your terminal."
     echo "To use Aider, run: aider --model ${local.selected_model} --api-key ${local.api_arg} ${var.additional_arguments}"
@@ -352,8 +436,28 @@ resource "coder_script" "aider" {
 # Command to run Aider CLI
 resource "coder_command" "aider" {
   agent_id     = var.agent_id
-  display_name = "Aider CLI"
+  display_name = data.coder_parameter.browser_mode.value == "true" ? "Aider (Browser UI)" : "Aider CLI"
   icon         = local.icon_url
-  command      = "cd ${var.folder} && aider --model ${local.selected_model} --api-key ${local.api_arg} ${var.additional_arguments}"
+  command      = <<-EOT
+    #!/bin/bash
+    # Determine working directory
+    if [ -n "${var.git_repository_url}" ] && [ ! -z "$(ls -A ${var.folder})" ]; then
+      repo_name=$(basename "${var.git_repository_url}" .git)
+      if [ -d "${var.folder}/${repo_name}" ]; then
+        cd "${var.folder}/${repo_name}"
+      else
+        cd "${var.folder}"
+      fi
+    else
+      cd "${var.folder}"
+    fi
+    
+    # Run Aider with browser flag if enabled
+    if [ "${data.coder_parameter.browser_mode.value}" = "true" ]; then
+      aider --browser --model ${local.selected_model} --api-key ${local.api_arg} ${var.additional_arguments}
+    else
+      aider --model ${local.selected_model} --api-key ${local.api_arg} ${var.additional_arguments}
+    fi
+  EOT
 }
 
